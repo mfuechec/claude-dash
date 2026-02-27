@@ -34,6 +34,12 @@ claude-dash
 
 # Run in specific workspace
 claude-dash /path/to/project
+
+# Auto-open as a side pane in iTerm (macOS)
+claude-pane
+
+# Open on the left side instead
+claude-pane --left
 ```
 
 ### Keyboard Shortcuts
@@ -47,26 +53,20 @@ claude-dash /path/to/project
 
 ## iTerm Integration
 
-For a persistent side panel in iTerm, add this to your shell config:
+The `claude-pane` command automatically opens claude-dash in a narrow side pane:
 
 ```bash
-# ~/.zshrc or ~/.bashrc
+# Open side panel on the right
+claude-pane
 
-# Launch claude-dash in a side pane
-claude-pane() {
-    # Open claude-dash in a right split
-    osascript -e 'tell application "iTerm2"
-        tell current session of current window
-            split vertically with default profile
-            tell last session of current tab of current window
-                write text "claude-dash '"${1:-$(pwd)}"'"
-            end tell
-        end tell
-    end tell'
-}
+# Open on the left
+claude-pane --left
+
+# Specify workspace
+claude-pane /path/to/project
 ```
 
-Then use `claude-pane` to open a dashboard alongside your terminal.
+This uses AppleScript to create an iTerm split pane and launch claude-dash in it.
 
 ## What It Shows
 

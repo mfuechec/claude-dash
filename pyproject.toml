@@ -29,6 +29,7 @@ dependencies = [
 
 [project.scripts]
 claude-dash = "claude_dash.app:main"
+claude-pane = "claude_dash.iterm:main"
 
 [project.urls]
 Homepage = "https://github.com/mfuechec/claude-dash"
