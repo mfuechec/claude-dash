@@ -38,14 +38,39 @@ class ClaudeConfig:
 
 
 def find_claude_md(workspace: Path) -> tuple[Optional[Path], str]:
-    """Find and read CLAUDE.md in the workspace."""
-    candidates = [
-        workspace / "CLAUDE.md",
-        workspace / ".claude" / "CLAUDE.md",
-        workspace / "claude.md",
+    """Find and read CLAUDE.md in the workspace, walking up the tree."""
+    # Check current directory and walk up to find CLAUDE.md
+    current = workspace
+    checked = set()
+    
+    while current != current.parent:
+        if current in checked:
+            break
+        checked.add(current)
+        
+        candidates = [
+            current / "CLAUDE.md",
+            current / ".claude" / "CLAUDE.md",
+            current / "claude.md",
+        ]
+        
+        for path in candidates:
+            if path.exists():
+                try:
+                    content = path.read_text()
+                    return path, content
+                except Exception:
+                    return path, f"[Error reading {path}]"
+        
+        current = current.parent
+    
+    # Also check home directory locations
+    home_candidates = [
+        Path.home() / ".claude" / "CLAUDE.md",
+        Path.home() / "CLAUDE.md",
     ]
     
-    for path in candidates:
+    for path in home_candidates:
         if path.exists():
             try:
                 content = path.read_text()
@@ -57,19 +82,36 @@ def find_claude_md(workspace: Path) -> tuple[Optional[Path], str]:
 
 
 def find_mcp_config(workspace: Path) -> tuple[Optional[Path], list[MCPServer]]:
-    """Find and parse MCP configuration."""
-    candidates = [
-        workspace / ".claude" / "mcp.json",
-        workspace / "mcp.json",
-        workspace / ".mcp.json",
-        workspace / "config" / "mcp.json",
-        workspace / "config" / "mcporter.json",
-        Path.home() / ".config" / "claude" / "mcp.json",
-        Path.home() / ".claude" / "mcp.json",
-    ]
-    
+    """Find and parse MCP configuration, walking up the tree."""
     servers = []
     config_path = None
+    
+    # Build list of candidates by walking up the tree
+    candidates = []
+    current = workspace
+    checked = set()
+    
+    while current != current.parent:
+        if current in checked:
+            break
+        checked.add(current)
+        
+        candidates.extend([
+            current / ".claude" / "mcp.json",
+            current / "mcp.json",
+            current / ".mcp.json",
+            current / "config" / "mcp.json",
+            current / "config" / "mcporter.json",
+        ])
+        current = current.parent
+    
+    # Add home directory locations
+    candidates.extend([
+        Path.home() / ".claude" / "mcp.json",
+        Path.home() / ".config" / "claude" / "mcp.json",
+        Path.home() / ".config" / "mcporter.json",
+        Path.home() / "clawd" / "config" / "mcporter.json",  # Clawdbot location
+    ])
     
     for path in candidates:
         if path.exists():

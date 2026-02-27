@@ -1,250 +1,170 @@
-"""Claude Dash - TUI dashboard for Claude Code setup."""
+"""Claude Dash - TUI dashboard for Claude Code setup.
+
+Designed to run in a narrow iTerm split pane (~30-40 chars wide).
+"""
 
 import os
 import subprocess
 from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
-from textual.widgets import (
-    Button,
-    Collapsible,
-    Footer,
-    Header,
-    Label,
-    ListItem,
-    ListView,
-    Markdown,
-    Static,
-    Tree,
-)
+from textual.containers import Container, Vertical, VerticalScroll
+from textual.widgets import Footer, Label, Static, Rule
 from textual.binding import Binding
 from textual.reactive import reactive
 
-from .config import load_config, ClaudeConfig, MCPServer, Skill
+from .config import load_config, ClaudeConfig
 
 
-class StatusIndicator(Static):
-    """A small status indicator."""
-    
-    def __init__(self, status: str = "ok", label: str = "", **kwargs):
-        super().__init__(**kwargs)
-        self.status = status
-        self.label_text = label
-    
-    def compose(self) -> ComposeResult:
-        icon = "●" if self.status == "ok" else "○" if self.status == "unknown" else "✗"
-        color = "green" if self.status == "ok" else "yellow" if self.status == "unknown" else "red"
-        yield Static(f"[{color}]{icon}[/] {self.label_text}")
-
-
-class CompactPanel(Static):
-    """Compact view shown when sidebar is collapsed."""
+class CompactView(Static):
+    """Compact view showing icons and counts."""
     
     def __init__(self, config: ClaudeConfig, **kwargs):
         super().__init__(**kwargs)
         self.config = config
     
     def compose(self) -> ComposeResult:
-        yield Static("⚡", classes="compact-icon")
-        yield Static(f"[dim]M:[/]{len(self.config.mcp_servers)}", classes="compact-stat")
-        yield Static(f"[dim]S:[/]{len(self.config.skills)}", classes="compact-stat")
+        yield Static("⚡ [bold]Claude[/]", classes="header")
+        yield Rule()
+        
+        # CLAUDE.md status
+        if self.config.claude_md_exists:
+            yield Static(f"📄 [green]✓[/] CLAUDE.md")
+            # Show path relative to home if possible
+            try:
+                rel = self.config.claude_md_path.relative_to(Path.home())
+                yield Static(f"   [dim]~/{rel}[/]", classes="subtext")
+            except ValueError:
+                yield Static(f"   [dim]{self.config.claude_md_path}[/]", classes="subtext")
+        else:
+            yield Static(f"📄 [red]✗[/] CLAUDE.md")
+        
+        yield Static("")
+        
+        # MCP servers
+        yield Static(f"🔌 [bold]{len(self.config.mcp_servers)}[/] MCP servers")
+        for server in self.config.mcp_servers[:5]:
+            status = "[green]●[/]" if server.status == "configured" else "[yellow]○[/]"
+            yield Static(f"   {status} {server.name}", classes="item")
+        if len(self.config.mcp_servers) > 5:
+            yield Static(f"   [dim]+{len(self.config.mcp_servers) - 5} more[/]", classes="subtext")
+        
+        yield Static("")
+        
+        # Skills
+        yield Static(f"📚 [bold]{len(self.config.skills)}[/] skills")
+        for skill in self.config.skills[:5]:
+            yield Static(f"   • {skill.name}", classes="item")
+        if len(self.config.skills) > 5:
+            yield Static(f"   [dim]+{len(self.config.skills) - 5} more[/]", classes="subtext")
 
 
-class MCPServerItem(Static):
-    """Display for a single MCP server."""
-    
-    def __init__(self, server: MCPServer, **kwargs):
-        super().__init__(**kwargs)
-        self.server = server
-    
-    def compose(self) -> ComposeResult:
-        status_icon = "●" if self.server.status == "configured" else "○"
-        status_color = "green" if self.server.status == "configured" else "yellow"
-        yield Static(
-            f"[{status_color}]{status_icon}[/] [bold]{self.server.name}[/]"
-        )
-        if self.server.command:
-            cmd_display = self.server.command[:50] + "..." if len(self.server.command) > 50 else self.server.command
-            yield Static(f"  [dim]{cmd_display}[/]")
-
-
-class SkillItem(Static):
-    """Display for a single skill."""
-    
-    def __init__(self, skill: Skill, **kwargs):
-        super().__init__(**kwargs)
-        self.skill = skill
-    
-    def compose(self) -> ComposeResult:
-        yield Static(f"📚 [bold]{self.skill.name}[/]")
-        if self.skill.description:
-            desc = self.skill.description[:60] + "..." if len(self.skill.description) > 60 else self.skill.description
-            yield Static(f"  [dim]{desc}[/]")
-
-
-class DetailPanel(Static):
-    """Main detail panel showing selected item."""
-    
-    content: reactive[str] = reactive("")
-    
-    def compose(self) -> ComposeResult:
-        yield VerticalScroll(
-            Markdown(self.content, id="detail-content"),
-            id="detail-scroll"
-        )
-    
-    def watch_content(self, new_content: str) -> None:
-        try:
-            md = self.query_one("#detail-content", Markdown)
-            md.update(new_content)
-        except Exception:
-            pass
-
-
-class SidePanel(Static):
-    """Collapsible side panel with config overview."""
-    
-    expanded: reactive[bool] = reactive(True)
+class ExpandedView(Static):
+    """Expanded view showing full details."""
     
     def __init__(self, config: ClaudeConfig, **kwargs):
         super().__init__(**kwargs)
         self.config = config
     
     def compose(self) -> ComposeResult:
-        with Vertical(id="side-content"):
-            # Header
-            yield Static("⚡ [bold]Claude Dash[/]", id="side-header")
-            yield Static(f"[dim]{self.config.workspace.name}[/]", id="workspace-name")
-            yield Static("─" * 20, classes="separator")
-            
-            # CLAUDE.md section
-            with Collapsible(title="CLAUDE.md", collapsed=False):
-                if self.config.claude_md_exists:
-                    yield Button("📄 View CLAUDE.md", id="btn-claude-md", variant="default")
-                else:
-                    yield Static("[dim]Not found[/]")
-            
-            # MCP Servers section
-            with Collapsible(title=f"MCP Servers ({len(self.config.mcp_servers)})", collapsed=False):
-                if self.config.mcp_servers:
-                    for server in self.config.mcp_servers:
-                        yield MCPServerItem(server, classes="mcp-item")
-                else:
-                    yield Static("[dim]None configured[/]")
-            
-            # Skills section
-            with Collapsible(title=f"Skills ({len(self.config.skills)})", collapsed=True):
-                if self.config.skills:
-                    for skill in self.config.skills[:10]:  # Limit display
-                        yield SkillItem(skill, classes="skill-item")
-                    if len(self.config.skills) > 10:
-                        yield Static(f"[dim]... and {len(self.config.skills) - 10} more[/]")
-                else:
-                    yield Static("[dim]None found[/]")
+        yield Static("⚡ [bold]Claude Dash[/]", classes="header")
+        yield Static(f"[dim]{self.config.workspace}[/]", classes="subtext")
+        yield Rule()
+        
+        # CLAUDE.md section
+        yield Static("[bold]CLAUDE.md[/]")
+        if self.config.claude_md_exists:
+            yield Static(f"[green]✓[/] {self.config.claude_md_path}")
+            yield Static("")
+            # Show first 20 lines
+            lines = self.config.claude_md_content.split('\n')[:20]
+            for line in lines:
+                display_line = line[:60] + "..." if len(line) > 60 else line
+                yield Static(f"[dim]{display_line}[/]")
+            if len(self.config.claude_md_content.split('\n')) > 20:
+                yield Static("[dim]...[/]")
+        else:
+            yield Static("[red]✗[/] Not found")
+        
+        yield Rule()
+        
+        # MCP servers section
+        yield Static(f"[bold]MCP Servers ({len(self.config.mcp_servers)})[/]")
+        if self.config.mcp_config_path:
+            yield Static(f"[dim]{self.config.mcp_config_path}[/]", classes="subtext")
+        yield Static("")
+        for server in self.config.mcp_servers:
+            status = "[green]●[/]" if server.status == "configured" else "[yellow]○[/]"
+            yield Static(f"{status} [bold]{server.name}[/]")
+            if server.command:
+                cmd = server.command[:50] + "..." if len(server.command) > 50 else server.command
+                yield Static(f"  [dim]{cmd}[/]")
+        if not self.config.mcp_servers:
+            yield Static("[dim]None configured[/]")
+        
+        yield Rule()
+        
+        # Skills section
+        yield Static(f"[bold]Skills ({len(self.config.skills)})[/]")
+        yield Static("")
+        for skill in self.config.skills:
+            yield Static(f"• [bold]{skill.name}[/]")
+            if skill.description:
+                desc = skill.description[:50] + "..." if len(skill.description) > 50 else skill.description
+                yield Static(f"  [dim]{desc}[/]")
+        if not self.config.skills:
+            yield Static("[dim]None found[/]")
 
 
 class ClaudeDash(App):
-    """Main Claude Dash application."""
+    """Narrow side-panel dashboard for Claude Code setup."""
     
     CSS = """
     Screen {
-        layout: horizontal;
-    }
-    
-    #side-panel {
-        width: 35;
-        min-width: 20;
-        max-width: 50;
-        height: 100%;
         background: $surface;
-        border-right: solid $primary;
-        padding: 1;
     }
     
-    #side-panel.collapsed {
-        width: 6;
-        min-width: 6;
-    }
-    
-    #side-header {
+    .header {
         text-align: center;
-        padding-bottom: 1;
-    }
-    
-    #workspace-name {
-        text-align: center;
-        padding-bottom: 1;
-    }
-    
-    .separator {
-        color: $primary-darken-2;
-        text-align: center;
-    }
-    
-    #main-panel {
-        width: 1fr;
-        height: 100%;
-        padding: 1;
-    }
-    
-    #detail-scroll {
-        height: 100%;
-        border: solid $primary-darken-2;
-        padding: 1;
-    }
-    
-    .mcp-item {
-        padding: 0 0 1 0;
-    }
-    
-    .skill-item {
-        padding: 0 0 1 0;
-    }
-    
-    Collapsible {
-        padding: 0;
-        margin: 0 0 1 0;
-    }
-    
-    CollapsibleTitle {
-        padding: 0;
-    }
-    
-    Button {
-        width: 100%;
-        margin: 0;
-    }
-    
-    #compact-panel {
-        width: 4;
         padding: 1 0;
     }
     
-    .compact-icon {
-        text-align: center;
-        padding-bottom: 1;
+    .subtext {
+        color: $text-muted;
     }
     
-    .compact-stat {
-        text-align: center;
+    .item {
+        padding: 0;
+    }
+    
+    #main {
+        padding: 1;
+        height: 100%;
+    }
+    
+    #scroll {
+        height: 100%;
+    }
+    
+    Rule {
+        margin: 1 0;
+        color: $primary-darken-2;
     }
     
     Footer {
-        background: $surface;
+        background: $surface-darken-1;
     }
     """
     
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("escape", "quit", "Quit"),
-        Binding("tab", "toggle_sidebar", "Toggle Sidebar"),
-        Binding("e", "edit_claude_md", "Edit CLAUDE.md"),
+        Binding("space", "toggle_view", "Expand"),
+        Binding("e", "edit", "Edit"),
         Binding("r", "refresh", "Refresh"),
-        Binding("?", "help", "Help"),
     ]
     
-    sidebar_visible: reactive[bool] = reactive(True)
+    expanded: reactive[bool] = reactive(False)
     
     def __init__(self, workspace: Path | None = None):
         super().__init__()
@@ -252,59 +172,31 @@ class ClaudeDash(App):
         self.config = load_config(self.workspace)
     
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        
-        with Horizontal():
-            yield SidePanel(self.config, id="side-panel")
-            yield DetailPanel(id="main-panel")
-        
+        with VerticalScroll(id="scroll"):
+            with Container(id="main"):
+                if self.expanded:
+                    yield ExpandedView(self.config, id="view")
+                else:
+                    yield CompactView(self.config, id="view")
         yield Footer()
     
-    def on_mount(self) -> None:
-        """Show CLAUDE.md content on start if it exists."""
-        if self.config.claude_md_exists:
-            self.show_claude_md()
-        else:
-            self.show_welcome()
+    def watch_expanded(self, expanded: bool) -> None:
+        """Rebuild view when expanded state changes."""
+        try:
+            container = self.query_one("#main", Container)
+            container.remove_children()
+            if expanded:
+                container.mount(ExpandedView(self.config, id="view"))
+            else:
+                container.mount(CompactView(self.config, id="view"))
+        except Exception:
+            pass
     
-    def show_claude_md(self) -> None:
-        """Display CLAUDE.md content in detail panel."""
-        detail = self.query_one("#main-panel", DetailPanel)
-        detail.content = self.config.claude_md_content
+    def action_toggle_view(self) -> None:
+        """Toggle between compact and expanded view."""
+        self.expanded = not self.expanded
     
-    def show_welcome(self) -> None:
-        """Show welcome/help message."""
-        detail = self.query_one("#main-panel", DetailPanel)
-        detail.content = f"""# Claude Dash
-
-Welcome to your Claude Code setup dashboard.
-
-## Workspace
-`{self.config.workspace}`
-
-## Status
-- **CLAUDE.md**: {"✅ Found" if self.config.claude_md_exists else "❌ Not found"}
-- **MCP Servers**: {len(self.config.mcp_servers)} configured
-- **Skills**: {len(self.config.skills)} available
-
-## Keyboard Shortcuts
-- `Tab` - Toggle sidebar
-- `e` - Edit CLAUDE.md in $EDITOR
-- `r` - Refresh configuration
-- `q` or `Esc` - Quit
-"""
-    
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle button presses."""
-        if event.button.id == "btn-claude-md":
-            self.show_claude_md()
-    
-    def action_toggle_sidebar(self) -> None:
-        """Toggle sidebar width."""
-        panel = self.query_one("#side-panel")
-        panel.toggle_class("collapsed")
-    
-    def action_edit_claude_md(self) -> None:
+    def action_edit(self) -> None:
         """Open CLAUDE.md in editor."""
         if self.config.claude_md_path:
             editor = os.environ.get("EDITOR", "vim")
@@ -314,23 +206,17 @@ Welcome to your Claude Code setup dashboard.
     def action_refresh(self) -> None:
         """Reload configuration."""
         self.config = load_config(self.workspace)
-        self.notify("Configuration refreshed")
-        # Refresh display
-        if self.config.claude_md_exists:
-            self.show_claude_md()
-        else:
-            self.show_welcome()
-    
-    def action_help(self) -> None:
-        """Show help."""
-        self.show_welcome()
+        self.expanded = self.expanded  # Trigger rebuild
+        self.notify("Refreshed")
 
 
 def main():
     """Main entry point."""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Claude Code setup dashboard")
+    parser = argparse.ArgumentParser(
+        description="Claude Code setup dashboard (designed for narrow side pane)"
+    )
     parser.add_argument(
         "workspace",
         nargs="?",
@@ -338,15 +224,17 @@ def main():
         help="Workspace directory (default: current directory)"
     )
     parser.add_argument(
-        "--compact",
+        "-e", "--expanded",
         action="store_true",
-        help="Start in compact mode"
+        help="Start in expanded mode"
     )
     
     args = parser.parse_args()
     
     workspace = Path(args.workspace) if args.workspace else None
     app = ClaudeDash(workspace=workspace)
+    if args.expanded:
+        app.expanded = True
     app.run()
 
 
